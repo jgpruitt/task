@@ -20,6 +20,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+// Package task provides various ways to run tasks in goroutines
 package task
 
 import (
@@ -32,16 +33,21 @@ import (
 	"time"
 )
 
+// A Frame represents a stack frame in a trace of callers to a function
+// which has panicked.
 type Frame struct {
 	File     string
 	Line     int
 	Function string
 }
 
+// String returns a simple string representation of the Frame's information
 func (f *Frame) String() string {
 	return fmt.Sprintf("File: %s Line: %d Function: %s", f.File, f.Line, f.Function)
 }
 
+// callers is a handy wrapper around runtime.Callers and
+// runtime.CallersFrames to construct a stack trace
 func callers(skip, depth int) (trace []*Frame) {
 	if skip < 0 {
 		skip = 0
@@ -74,16 +80,25 @@ func callers(skip, depth int) (trace []*Frame) {
 	return
 }
 
+// A PanicHandler is called whenever a Task panics.
+// The err argument contains the value returned by recover().
+// The trace contains stack trace info.
 type PanicHandler func(err interface{}, trace []*Frame)
 
+// A Task is a unit of work to be executed
 type Task func()
 
+// A Kill is a closure returned from some methods of a *Run
+// which if executed will abort future executions of a Task.
 type Kill func()
 
+// A Run provides various ways to execute Tasks
 type Run struct {
 	panicHandler PanicHandler
 }
 
+// New returns a newly constructed Run which will use the
+// given PanicHandler to deal with any panics
 func New(panicHandler PanicHandler) *Run {
 	if panicHandler == nil {
 		panicHandler = func(err interface{}, trace []*Frame) {
@@ -95,6 +110,9 @@ func New(panicHandler PanicHandler) *Run {
 	}
 }
 
+// Synchronously blocks the caller while executing task.
+// If task panics, it will use the PanicHandler registered
+// with r to deal with it.
 func (r *Run) Synchronously(task Task) {
 	defer func() {
 		if err := recover(); err != nil {
@@ -105,6 +123,9 @@ func (r *Run) Synchronously(task Task) {
 	task()
 }
 
+// Asynchronously executes task in a goroutine, and thus does
+// not block the caller. If task panics, it will use the
+// PanicHandler registered with r to deal with it.
 func (r *Run) Asynchronously(task Task) {
 	go func() {
 		defer func() {
@@ -117,6 +138,10 @@ func (r *Run) Asynchronously(task Task) {
 	}()
 }
 
+// At executes task at the given time "at" in the future.
+// It returns a Kill which can be used to cancel the execution
+// of Task prior to at. An error is returned if at is not a
+// time in the future.
 func (r *Run) At(at time.Time, task Task) (Kill, error) {
 	var dur = time.Until(at)
 	if dur <= 0 {
@@ -126,6 +151,7 @@ func (r *Run) At(at time.Time, task Task) (Kill, error) {
 	var once sync.Once
 	var die = make(chan struct{}, 1)
 
+	// construct our killer
 	var kill = func() {
 		once.Do(func() {
 			timer.Stop()
@@ -140,18 +166,25 @@ func (r *Run) At(at time.Time, task Task) (Kill, error) {
 				var trace = callers(5, 25)
 				r.panicHandler(err, trace)
 			}
+			// be sure to clean up our timer and channel
 			kill()
 		}()
+		// wait for either the timer to go off or the signal to die
 		select {
 		case <-timer.C:
 			task()
 		case <-die:
+			// noop; exit the goroutine
 		}
 	}()
 
 	return kill, nil
 }
 
+// After executes task after the given duration "after" has elapsed.
+// It returns a Kill which can be used to cancel the execution
+// of Task prior to the duration elapsing. An error is returned if
+// after is not a positive duration.
 func (r *Run) After(after time.Duration, task Task) (Kill, error) {
 	if after <= 0 {
 		return nil, errors.New("after must be positive duration")
@@ -174,18 +207,24 @@ func (r *Run) After(after time.Duration, task Task) (Kill, error) {
 				var trace = callers(5, 25)
 				r.panicHandler(err, trace)
 			}
+			// be sure to clean up our timer and channel
 			kill()
 		}()
+		// wait for the timer to go off or the die signal
 		select {
 		case <-timer.C:
 			task()
 		case <-die:
+			// noop; exit the goroutine
 		}
 	}()
 
 	return kill, nil
 }
 
+// Every executes task periodically each time every duration elapses.
+// It returns a Kill which can be used to cancel any future executions
+// of task. An error is returned if every is not a positive duration.
 func (r *Run) Every(every time.Duration, task Task) (Kill, error) {
 	if every <= 0 {
 		return nil, errors.New("every must be a positive duration")
@@ -203,10 +242,12 @@ func (r *Run) Every(every time.Duration, task Task) (Kill, error) {
 	}	
 	
 	go func() {
-		defer kill()
-		for {
+		defer kill() // be sure to clean up our ticker and channel
+		for { // loop forever, or until the die signal is received
 			select {
 			case <-tick.C:
+				// need to run task in an anonymous func so we can
+				// handle any panics
 				func() {
 					defer func() {
 						if err := recover(); err != nil {
@@ -217,6 +258,7 @@ func (r *Run) Every(every time.Duration, task Task) (Kill, error) {
 					task()
 				}()
 			case <-die:
+				// exit the goroutine
 				return
 			}
 		}
@@ -225,6 +267,11 @@ func (r *Run) Every(every time.Duration, task Task) (Kill, error) {
 	return kill, nil
 }
 
+// Until executes task periodically each time every duration elapses.
+// It will cease to periodically execute task at until time in the future.
+// It returns a Kill which can be used to cancel any future executions
+// of task. An error is returned if every is not a positive duration or
+// until is not a time in the future.
 func (r *Run) Until(every time.Duration, until time.Time, task Task) (Kill, error) {
 	if every <= 0 {
 		return nil, errors.New("every must be a positive duration")
@@ -244,15 +291,18 @@ func (r *Run) Until(every time.Duration, until time.Time, task Task) (Kill, erro
 		})
 	}
 
+	// kill it in the future
 	r.After(until.Sub(time.Now()), func() {
 		kill()
 	})
 
 	go func() {
-		defer kill()
-		for {
+		defer kill() // be sure to clean up the ticker and channel
+		for { // loop forever until we get the die signal
 			select {
 			case <-tick.C:
+				// run task in an anonymous func so we can
+				// handle any panics
 				func() {
 					defer func() {
 						if err := recover(); err != nil {
@@ -263,6 +313,7 @@ func (r *Run) Until(every time.Duration, until time.Time, task Task) (Kill, erro
 					task()
 				}()
 			case <-die:
+				// exit the goroutine
 				return
 			}
 		}
@@ -271,6 +322,11 @@ func (r *Run) Until(every time.Duration, until time.Time, task Task) (Kill, erro
 	return kill, nil
 }
 
+// Times executes task periodically each time every duration elapses.
+// It will cease to periodically execute task after times executions.
+// It returns a Kill which can be used to cancel any future executions
+// of task. An error is returned if every is not a positive duration or
+// times is not a positive integer.
 func (r *Run) Times(every time.Duration, times int, task Task) (Kill, error) {
 	if every <= 0 {
 		return nil, errors.New("every must be a positive duration")
@@ -291,10 +347,12 @@ func (r *Run) Times(every time.Duration, times int, task Task) (Kill, error) {
 	}
 
 	go func() {
-		defer kill()
+		defer kill() // be sure to clean up the ticker and channel
+		// limit our iterations to times times
 		for i := 0; i < times; i++ {
 			select {
 			case <-tick.C:
+				// run in an anonymous func so we can handle panics
 				func() {
 					defer func() {
 						if err := recover(); err != nil {
@@ -305,6 +363,7 @@ func (r *Run) Times(every time.Duration, times int, task Task) (Kill, error) {
 					task()
 				}()
 			case <-die:
+				// exit the goroutine
 				return
 			}
 		}

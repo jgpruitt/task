@@ -390,3 +390,68 @@ func (r *Run) These(tasks ...Task) {
 	}
 	wg.Wait()
 }
+
+// A Delayer takes the beginning and ending times of the last execution
+// of a Task and returns the duration of time to delay before the next
+// execution of the task.
+type Delayer func(bgn, end time.Time) (delay time.Duration)
+
+// Delayed runs non-overlapping instances of "task" separated by a delay.
+// The initial execution of task happens after a delay of "init".
+// After each execution, "delayer" is called with the beginning and ending
+// times of the last execution. "delayer" will return the delay to wait
+// before the next execution should begin. If "delayer" returns a negative
+// delay, then no more executions are scheduled.
+// A Kill is returned to cancel any future executions.
+// An error is returned if "init" is not positive or if delayer is nil.
+func (r *Run) Delayed(init time.Duration, delayer Delayer, task Task) (Kill, error) {
+	if init < 0 {
+		return nil, errors.New("init must be a non-negative duration")
+	}
+	if delayer == nil {
+		return nil, errors.New("delayer must not be nil")
+	}
+
+	var timer = time.NewTimer(init)
+	var once sync.Once
+	var die = make(chan struct{}, 1)
+
+	var kill = func() {
+		once.Do(func() {
+			timer.Stop()
+			die <-struct{}{}
+			close(die)
+		})
+	}
+
+	go func() {
+		// be sure to clean up our timer and channel
+		defer kill()
+		// loop forever, or until killed, or until delayer returns non-positive delay
+		for {
+			select {
+			case <-timer.C:
+				// run in an anonymous func so we can catch panics
+				var delay = func() time.Duration {
+					defer func() {
+						if err := recover(); err != nil {
+							var trace = callers(5, 25)
+							r.panicHandler(err, trace)
+						}
+					}()
+					var bgn = time.Now()
+					task()
+					return delayer(bgn, time.Now())
+				}()
+				if delay < 0 {
+					return
+				}
+				timer.Reset(delay)
+			case <-die:
+				return
+			}
+		}
+	}()
+
+	return kill, nil
+}

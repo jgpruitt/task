@@ -239,11 +239,11 @@ func (r *Run) Every(every time.Duration, task Task) (Kill, error) {
 			die <- struct{}{}
 			close(die)
 		})
-	}	
-	
+	}
+
 	go func() {
 		defer kill() // be sure to clean up our ticker and channel
-		for { // loop forever, or until the die signal is received
+		for {        // loop forever, or until the die signal is received
 			select {
 			case <-tick.C:
 				// need to run task in an anonymous func so we can
@@ -286,7 +286,7 @@ func (r *Run) Until(every time.Duration, until time.Time, task Task) (Kill, erro
 	var kill = func() {
 		once.Do(func() {
 			tick.Stop()
-			die <-struct{}{}
+			die <- struct{}{}
 			close(die)
 		})
 	}
@@ -298,7 +298,7 @@ func (r *Run) Until(every time.Duration, until time.Time, task Task) (Kill, erro
 
 	go func() {
 		defer kill() // be sure to clean up the ticker and channel
-		for { // loop forever until we get the die signal
+		for {        // loop forever until we get the die signal
 			select {
 			case <-tick.C:
 				// run task in an anonymous func so we can
@@ -341,7 +341,7 @@ func (r *Run) Times(every time.Duration, times int, task Task) (Kill, error) {
 	var kill = func() {
 		once.Do(func() {
 			tick.Stop()
-			die <-struct{}{}
+			die <- struct{}{}
 			close(die)
 		})
 	}
@@ -419,7 +419,7 @@ func (r *Run) Delayed(init time.Duration, delayer Delayer, task Task) (Kill, err
 	var kill = func() {
 		once.Do(func() {
 			timer.Stop()
-			die <-struct{}{}
+			die <- struct{}{}
 			close(die)
 		})
 	}

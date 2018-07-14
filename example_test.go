@@ -25,9 +25,9 @@ package task_test
 import (
 	"fmt"
 	"github.com/jgpruitt/task"
-	"time"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 func handlePanic(err interface{}, trace []*task.Frame) {
@@ -119,7 +119,7 @@ func ExampleRun_Every() {
 
 	run := task.New(handlePanic)
 
-	kill, _ := run.Every(1 * time.Second, func() {
+	kill, _ := run.Every(1*time.Second, func() {
 		fmt.Println("I ran.")
 		wg.Done()
 	})
@@ -160,7 +160,7 @@ func ExampleRun_Times() {
 
 	run := task.New(handlePanic)
 
-	run.Times(1 * time.Second, 3, func() {
+	run.Times(1*time.Second, 3, func() {
 		fmt.Println("I ran.")
 		wg.Done()
 	})
